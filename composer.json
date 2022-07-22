@@ -1,0 +1,23 @@
+{
+  "name": "wgr/flysystem-infomaniak",
+  "description": "flysystem for infomaniak",
+  "require": {
+    "php": ">=7.1",
+    "league/flysystem": "^1.0.40",
+    "league/flysystem-webdav": "^1.0.10",
+    "php-opencloud/openstack": "^3.2"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "*"
+  },
+  "autoload": {
+    "psr-4": {
+      "Wgr\\Flysystem\\Infomaniak\\": "src"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "Wgr\\\Flysystem\\Infomaniak\\Test\\": "tests"
+    }
+  }
+}
