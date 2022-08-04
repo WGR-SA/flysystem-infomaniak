@@ -11,6 +11,7 @@ use GuzzleHttp\Psr7\Stream;
 use OpenStack\OpenStack as Client;
 use OpenStack\ObjectStore\v1\Models\StorageObject;
 use OpenStack\ObjectStore\v1\Api;
+use Wgr\Flysystem\Infomaniak\Mime;
 
 class OpenStack extends AbstractAdapter
 {
@@ -33,8 +34,8 @@ class OpenStack extends AbstractAdapter
    * @var array
    */
   protected static $resultMap = [
-      'content-length' => 'size',
-      'content-type' => 'mimetype',
+      'contentLength' => 'size',
+      'contentType' => 'mimetype',
   ];
 
   public function __construct(Client $client, $container, $prefix = '')
@@ -142,12 +143,16 @@ class OpenStack extends AbstractAdapter
   */
   public function writeStream($path, $resource, Config $config)
   {
+    $obj = [
+      'name' => $this->applyPathPrefix($path),
+      //new Stream($resource)
+    ];
     $obj = array_merge($this->mergeConfig('putObject', $config ),[
       'name' => $this->applyPathPrefix($path),
       'stream' => new Stream($resource)
     ]);
 
-    return $this->getContainer()->createLargeObject($obj);
+    return $this->getContainer()->createObject($obj);
   }
 
   /**
@@ -259,6 +264,7 @@ class OpenStack extends AbstractAdapter
    */
   protected function normalizeObject(StorageObject $object, $path = null)
   {
+    //debug($object);
       if(!$path) $path = $object->name;
 
       $path = ltrim($path, $this->getPathPrefix());
@@ -268,6 +274,9 @@ class OpenStack extends AbstractAdapter
       }
 
       $result = Util::map((array) $object, static::$resultMap);
+
+      // fix MIME
+      if(empty($result['mimetype'])) $result['mimetype'] = Mime::getMime($path);
 
       if ($object->lastModified)  $result['timestamp'] = $object->lastModified->getTimestamp();
 
