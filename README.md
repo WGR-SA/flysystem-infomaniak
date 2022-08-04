@@ -6,11 +6,11 @@
 composer require wgr/flysystem-infomaniak
 ```
 
-doc is coming bro
+## Public Cloud
 
 ```php
 // CONFIG
-$osClient = new OpenStackClient([
+$osClient = new \Wgr\Flysystem\Infomaniak\Http\OpenStackClient\OpenStackClient([
   'authUrl' => 'https://api.pub1.infomaniak.cloud/identity/v3',
   'region'  => 'dc3-a',
   'application_credential' => [
@@ -21,9 +21,11 @@ $osClient = new OpenStackClient([
 ]);
 
 // SETUP
-$adapter = new Wgr\Flysystem\Infomaniak\Adapter\OpenStack($osClient,'my-container','myFolder');
-$filesystem = new League\Flysystem\Filesystem($adapter);
+$adapter = new \Wgr\Flysystem\Infomaniak\Adapter\OpenStack($osClient,'my-container','myFolder');
+$filesystem = new \League\Flysystem\Filesystem($adapter);
 
 // USAGE
 $filesystem->write($path, $contents);
 ```
+
+more doc is coming bro
