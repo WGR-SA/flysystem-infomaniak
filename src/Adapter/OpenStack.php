@@ -136,13 +136,13 @@ class OpenStack extends AbstractAdapter
   */
   public function read($path)
   {
-    return $this->readStream($path)->getContent();
+    return $this->readStream($path)->getContents();
   }
 
   public function readStream($path)
   {
     $location = $this->applyPathPrefix($path);
-    return $this->getContainer()->getObject($location)->download();
+    return $this->getContainer()->getObject($location);//->download();
   }
 
   /**
@@ -191,6 +191,13 @@ class OpenStack extends AbstractAdapter
     return Util::emulateDirectories(array_map([$this, 'normalizeObject'], $response));
   }
 
+  public function getObjectArray($path)
+  {
+    $location = $this->applyPathPrefix($path);
+    $obj = $this->getContainer()->getObject($location);
+    return $this->normalizeObject($obj);
+  }
+
   /**
    * Normalise a WebDAV repsonse object.
    *
@@ -215,7 +222,6 @@ class OpenStack extends AbstractAdapter
 
       $result['type'] = 'file';
       $result['path'] = trim($path, '/');
-
       return $result;
   }
 
@@ -224,8 +230,7 @@ class OpenStack extends AbstractAdapter
   */
   public function getMetadata($path)
   {
-    $location = $this->applyPathPrefix($path);
-    return $this->getContainer()->getObject($location);//->getMetadata();
+    return $this->getObjectArray($path);
   }
 
   /**
@@ -233,8 +238,7 @@ class OpenStack extends AbstractAdapter
   */
   public function getSize($path)
   {
-    $location = $this->applyPathPrefix($path);
-    return $this->getContainer()->getObject($location);
+    return $this->getMetadata($path);
   }
 
   /**
@@ -242,8 +246,7 @@ class OpenStack extends AbstractAdapter
   */
   public function getMimetype($path)
   {
-    $location = $this->applyPathPrefix($path);
-    return $this->getContainer()->getObject($location);
+    return $this->getMetadata($path);
   }
 
   /**
@@ -251,8 +254,7 @@ class OpenStack extends AbstractAdapter
   */
   public function getTimestamp($path)
   {
-    $location = $this->applyPathPrefix($path);
-    return $this->getContainer()->getObject($location);
+    return $this->getMetadata($path);
   }
 
   /**
@@ -260,7 +262,7 @@ class OpenStack extends AbstractAdapter
   */
   public function getVisibility($path)
   {
-    return false;
+    return $this->getMetadata($path);
   }
 
   /**
