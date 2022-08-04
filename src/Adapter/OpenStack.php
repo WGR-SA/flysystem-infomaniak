@@ -9,6 +9,7 @@ use League\Flysystem\Config;
 use League\Flysystem\Util;
 use GuzzleHttp\Psr7\Stream;
 use OpenStack\OpenStack as Client;
+use OpenStack\ObjectStore\v1\Models\StorageObject;
 
 class OpenStack extends AbstractAdapter
 {
@@ -24,6 +25,14 @@ class OpenStack extends AbstractAdapter
   protected $service;
 
   protected $container;
+
+  /**
+   * @var array
+   */
+  protected static $resultMap = [
+      'content-length' => 'size',
+      'content-type' => 'mimetype',
+  ];
 
   public function __construct(Client $client, $container, $prefix = '')
   {
@@ -162,18 +171,52 @@ class OpenStack extends AbstractAdapter
     $marker = null;
     $location = $this->applyPathPrefix($directory);
 
-    while(true) {
-      $objectList = $this->getContainer()->listObjects(['prefix' => $location, 'marker' => $marker]);
-
-      if ($objectList->count() === 0) {
-        break;
-      }
-
+    while(true)
+    {
+      $objectList = $this->getContainer()->listObjects([
+        'prefix' => $location,
+        'marker' => $marker,
+        //'limit' => 100
+      ]);
       $response = array_merge($response, iterator_to_array($objectList));
-      $marker = end($response)->getName();
+
+      /* No time to check how to get all record with marker implementation
+      if (count($response) === 0) break;
+      $marker = end($response)->name;
+      */
+
+      break;
     }
 
     return Util::emulateDirectories(array_map([$this, 'normalizeObject'], $response));
+  }
+
+  /**
+   * Normalise a WebDAV repsonse object.
+   *
+   * @param StorageObject  $object
+   * @param string $path
+   *
+   * @return array
+   */
+  protected function normalizeObject(StorageObject $object, $path = null)
+  {
+      if(!$path) $path = $object->name;
+
+      $path = ltrim($path, $this->getPathPrefix());
+
+      if ($object->contentType == 'application/directory') {
+        return ['type' => 'dir', 'path' => trim($path, '/')];
+      }
+
+      $result = Util::map((array) $object, static::$resultMap);
+
+      if ($object->lastModified)  $result['timestamp'] = $object->lastModified->getTimestamp();
+
+      $result['type'] = 'file';
+      $result['path'] = trim($path, '/');
+
+      return $result;
   }
 
   /**
