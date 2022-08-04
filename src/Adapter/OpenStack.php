@@ -10,6 +10,7 @@ use League\Flysystem\Util;
 use GuzzleHttp\Psr7\Stream;
 use OpenStack\OpenStack as Client;
 use OpenStack\ObjectStore\v1\Models\StorageObject;
+use OpenStack\ObjectStore\v1\Api;
 
 class OpenStack extends AbstractAdapter
 {
@@ -26,6 +27,8 @@ class OpenStack extends AbstractAdapter
 
   protected $container;
 
+  protected $api;
+
   /**
    * @var array
    */
@@ -36,6 +39,7 @@ class OpenStack extends AbstractAdapter
 
   public function __construct(Client $client, $container, $prefix = '')
   {
+    $this->api = new Api();
     $this->client = $client;
     $this->containerName = $container;
     $this->setPathPrefix($prefix);
@@ -51,6 +55,13 @@ class OpenStack extends AbstractAdapter
   {
     if(!$this->container) $this->container = $this->getService()->getContainer($this->containerName);
     return $this->container;
+  }
+
+  protected function getOptionsFor($fctName = 'postObject')
+  {
+    $array = call_user_func([$this->api, $fctName]);
+    if(empty($array['params'])) return [];
+    return array_keys($array['params']);
   }
 
   /**
@@ -87,13 +98,36 @@ class OpenStack extends AbstractAdapter
   /**
   * @inheritdoc
   */
+  public function delete($path)
+  {
+    $location = $this->applyPathPrefix($path);
+    try {
+      $this->getContainer()->getObject($location)->delete();
+    } catch (\Exception $e) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+  * @inheritdoc
+  */
+  public function rename($path, $newpath)
+  {
+    return false;
+  }
+
+  /**
+  * @inheritdoc
+  */
   public function write($path, $contents, Config $config)
   {
-    $obj = [
+    $obj = array_merge($this->mergeConfig('putObject', $config ),[
       'name' => $this->applyPathPrefix($path),
       'content' => $contents
-    ];
-    if($config->get('mimetype')) $obj['contentType'] = $config->get('mimetype');
+    ]);
+
     return $this->getContainer()->createObject($obj);
   }
 
@@ -108,12 +142,12 @@ class OpenStack extends AbstractAdapter
   */
   public function writeStream($path, $resource, Config $config)
   {
-    $obj = [
+    $obj = array_merge($this->mergeConfig('putObject', $config ),[
       'name' => $this->applyPathPrefix($path),
-      'stream' => new Stream($resource)//new Stream($resource)
-    ];
-    if($config->get('mimetype')) $obj['contentType'] = $config->get('mimetype');
-    return $this->getContainer()->createObject($obj);
+      'stream' => new Stream($resource)
+    ]);
+
+    return $this->getContainer()->createLargeObject($obj);
   }
 
   /**
@@ -122,13 +156,44 @@ class OpenStack extends AbstractAdapter
   public function update($path, $contents, Config $config)
   {
     $this->delete($path);
-    $this->write($path, $contents, $config);
+    return $this->write($path, $contents, $config);
   }
 
   public function updateStream($path, $resource, Config $config)
   {
     $this->delete($path);
-    $this->writeStream($path, $resource, $config);
+    return $this->writeStream($path, $resource, $config);
+  }
+
+
+  /**
+  * @inheritdoc
+  */
+  public function createDir($dirname, Config $config)
+  {
+    $obj = array_merge($this->mergeConfig('postObject', $config ),[
+      'name' => $this->applyPathPrefix($dirname),
+      'contentType' => 'application/directory'
+    ]);
+
+    return $this->getContainer()->createObject($obj);
+  }
+
+  /**
+  * @inheritdoc
+  */
+  public function deleteDir($dirname)
+  {
+    return $this->delete($dirname );
+  }
+
+  protected function mergeConfig(string $method = 'postObject', Config $config = null, array $obj = null)
+  {
+    if(!$config) return [];
+    if(!$obj) $obj = [];
+    foreach($this->getOptionsFor($method) as $opt) if($config->get('$opt', false)) $obj[$opt] = $config->get($opt);
+
+    return $obj;
   }
 
   /**
@@ -136,30 +201,23 @@ class OpenStack extends AbstractAdapter
   */
   public function read($path)
   {
-    return $this->readStream($path)->getContents();
+    $objArray = $this->readStream($path);
+    if(!$objArray) return false;
+
+    return [
+      'contents' => $objArray['stream']->getContents()
+    ];
   }
 
   public function readStream($path)
   {
-    $location = $this->applyPathPrefix($path);
-    return $this->getContainer()->getObject($location);//->download();
-  }
+    if(!$this->has($path)) return false;
 
-  /**
-  * @inheritdoc
-  */
-  public function rename($path, $newpath)
-  {
-    return false;
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function delete($path)
-  {
     $location = $this->applyPathPrefix($path);
-    $this->getContainer()->getObject($location)->delete();
+    $obj = $this->getContainer()->getObject($location);
+    return array_merge((array) $obj, [
+      'stream' => $obj->download()
+    ]);
   }
 
   /**
@@ -191,13 +249,6 @@ class OpenStack extends AbstractAdapter
     return Util::emulateDirectories(array_map([$this, 'normalizeObject'], $response));
   }
 
-  public function getObjectArray($path)
-  {
-    $location = $this->applyPathPrefix($path);
-    $obj = $this->getContainer()->getObject($location);
-    return $this->normalizeObject($obj);
-  }
-
   /**
    * Normalise a WebDAV repsonse object.
    *
@@ -223,6 +274,13 @@ class OpenStack extends AbstractAdapter
       $result['type'] = 'file';
       $result['path'] = trim($path, '/');
       return $result;
+  }
+
+  public function getObjectArray($path)
+  {
+    $location = $this->applyPathPrefix($path);
+    $obj = $this->getContainer()->getObject($location);
+    return $this->normalizeObject($obj);
   }
 
   /**
@@ -269,28 +327,6 @@ class OpenStack extends AbstractAdapter
   * @inheritdoc
   */
   public function setVisibility($path, $visibility)
-  {
-    return false;
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function createDir($dirname, Config $config)
-  {
-    $location = $this->applyPathPrefix($dirname);
-    $headers = $config->get('headers', []);
-    $headers['Content-Type'] = 'application/directory';
-    $extendedConfig = (new Config())->setFallback($config);
-    $extendedConfig->set('headers', $headers);
-
-    return $this->write($location, '', $extendedConfig);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function deleteDir($dirname)
   {
     return false;
   }
