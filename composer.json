@@ -3,8 +3,8 @@
   "description": "flysystem for infomaniak",
   "require": {
     "php": ">=7.1",
-    "league/flysystem": "^1.0.40",
-    "league/flysystem-webdav": "^1.0.10",
+    "league/flysystem": "^3.0",
+    "league/flysystem-webdav": "^3.0",
     "php-opencloud/openstack": "^3.2"
   },
   "require-dev": {
