@@ -2,341 +2,240 @@
 
 namespace Wgr\Flysystem\Infomaniak\Adapter;
 
-use League\Flysystem\Adapter\AbstractAdapter;
-use League\Flysystem\Adapter\Polyfill\StreamedCopyTrait;
-use League\Flysystem\Adapter\Polyfill\StreamedTrait;
 use League\Flysystem\Config;
-use League\Flysystem\Util;
+use League\Flysystem\DirectoryAttributes;
+use League\Flysystem\FileAttributes;
+use League\Flysystem\FilesystemAdapter;
+use League\Flysystem\PathPrefixer;
+use League\Flysystem\UnableToCheckExistence;
+use League\Flysystem\UnableToCreateDirectory;
+use League\Flysystem\UnableToDeleteFile;
+use League\Flysystem\UnableToReadFile;
+use League\Flysystem\UnableToRetrieveMetadata;
+use League\Flysystem\UnableToSetVisibility;
+use League\Flysystem\UnableToWriteFile;
 use GuzzleHttp\Psr7\Stream;
 use OpenStack\OpenStack as Client;
 use OpenStack\ObjectStore\v1\Models\StorageObject;
 use OpenStack\ObjectStore\v1\Api;
 use Wgr\Flysystem\Infomaniak\Mime;
 
-class OpenStack extends AbstractAdapter
+class OpenStack implements FilesystemAdapter
 {
-  use StreamedTrait;
-  use StreamedCopyTrait;
+  private Client $client;
+  private string $containerName;
+  private PathPrefixer $prefixer;
+  private ?object $service = null;
+  private ?object $container = null;
+  private Api $api;
 
-  protected $client;
-
-  protected $containerName;
-
-  protected $options = [];
-
-  protected $service;
-
-  protected $container;
-
-  protected $api;
-
-  /**
-   * @var array
-   */
-  protected static $resultMap = [
-      'contentLength' => 'size',
-      'contentType' => 'mimetype',
-  ];
-
-  public function __construct(Client $client, $container, $prefix = '')
+  public function __construct(Client $client, string $container, string $prefix = '')
   {
     $this->api = new Api();
     $this->client = $client;
     $this->containerName = $container;
-    $this->setPathPrefix($prefix);
+    $this->prefixer = new PathPrefixer($prefix);
   }
 
-  protected function getService()
+  private function getService()
   {
-    if(!$this->service) $this->service = $this->client->objectStoreV1();
+    if (!$this->service) {
+      $this->service = $this->client->objectStoreV1();
+    }
     return $this->service;
   }
 
-  protected function getContainer()
+  private function getContainer()
   {
-    if(!$this->container) $this->container = $this->getService()->getContainer($this->containerName);
+    if (!$this->container) {
+      $this->container = $this->getService()->getContainer($this->containerName);
+    }
     return $this->container;
   }
 
-  protected function getOptionsFor($fctName = 'postObject')
+  private function getOptionsFor(string $fctName = 'postObject'): array
   {
     $array = call_user_func([$this->api, $fctName]);
-    if(empty($array['params'])) return [];
+    if (empty($array['params'])) {
+      return [];
+    }
     return array_keys($array['params']);
   }
 
-  /**
-  * {@inheritdoc}
-  */
-  public function applyPathPrefix($path)
+  public function fileExists(string $path): bool
   {
-    return ltrim(parent::applyPathPrefix($path), '/');
-  }
+    $location = $this->prefixer->prefixPath($path);
 
-  /**
-  * {@inheritdoc}
-  */
-  public function setPathPrefix($prefix)
-  {
-    $prefix = ltrim($prefix, '/');
-
-    return parent::setPathPrefix($prefix);
-  }
-
-  /**
-  * Check whether a file is present.
-  *
-  * @param string $path
-  *
-  * @return bool
-  */
-  public function has($path)
-  {
-    $location = $this->applyPathPrefix($path);
-    return $this->getContainer()->objectExists($location);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function delete($path)
-  {
-    $location = $this->applyPathPrefix($path);
     try {
+      return $this->getContainer()->objectExists($location);
+    } catch (\Exception $e) {
+      throw UnableToCheckExistence::forLocation($path, $e);
+    }
+  }
+
+  public function write(string $path, string $contents, Config $config): void
+  {
+    $location = $this->prefixer->prefixPath($path);
+
+    try {
+      $obj = array_merge($this->mergeConfig('putObject', $config), [
+        'name' => $location,
+        'content' => $contents
+      ]);
+
+      $this->getContainer()->createObject($obj);
+    } catch (\Exception $e) {
+      throw UnableToWriteFile::atLocation($path, $e->getMessage(), $e);
+    }
+  }
+
+  public function writeStream(string $path, $contents, Config $config): void
+  {
+    $location = $this->prefixer->prefixPath($path);
+
+    try {
+      $obj = array_merge($this->mergeConfig('putObject', $config), [
+        'name' => $location,
+        'stream' => new Stream($contents)
+      ]);
+
+      $this->getContainer()->createObject($obj);
+    } catch (\Exception $e) {
+      throw UnableToWriteFile::atLocation($path, $e->getMessage(), $e);
+    }
+  }
+
+  public function read(string $path): string
+  {
+    try {
+      $object = $this->readStream($path);
+      return stream_get_contents($object);
+    } catch (\Exception $e) {
+      throw UnableToReadFile::fromLocation($path, $e->getMessage(), $e);
+    }
+  }
+
+  public function readStream(string $path)
+  {
+    try {
+      $location = $this->prefixer->prefixPath($path);
+      $object = $this->getContainer()->getObject($location);
+      return $object->download()->detach();
+    } catch (\Exception $e) {
+      throw UnableToReadFile::fromLocation($path, $e->getMessage(), $e);
+    }
+  }
+
+  public function delete(string $path): void
+  {
+    try {
+      $location = $this->prefixer->prefixPath($path);
       $this->getContainer()->getObject($location)->delete();
     } catch (\Exception $e) {
-      return false;
+      throw UnableToDeleteFile::atLocation($path, $e->getMessage(), $e);
+    }
+  }
+
+  public function deleteDirectory(string $path): void
+  {
+    $this->delete($path);
+  }
+
+  public function createDirectory(string $path, Config $config): void
+  {
+    try {
+      $obj = array_merge($this->mergeConfig('postObject', $config), [
+        'name' => $this->prefixer->prefixPath($path),
+        'contentType' => 'application/directory'
+      ]);
+
+      $this->getContainer()->createObject($obj);
+    } catch (\Exception $e) {
+      throw UnableToCreateDirectory::atLocation($path, $e->getMessage(), $e);
+    }
+  }
+
+  public function setVisibility(string $path, string $visibility): void
+  {
+    throw UnableToSetVisibility::atLocation($path, 'OpenStack does not support visibility settings');
+  }
+
+  public function visibility(string $path): FileAttributes
+  {
+    return $this->fileAttributes($path);
+  }
+
+  public function mimeType(string $path): FileAttributes
+  {
+    return $this->fileAttributes($path);
+  }
+
+  public function lastModified(string $path): FileAttributes
+  {
+    return $this->fileAttributes($path);
+  }
+
+  public function fileSize(string $path): FileAttributes
+  {
+    return $this->fileAttributes($path);
+  }
+
+  public function listContents(string $path, bool $deep): iterable
+  {
+    $location = $this->prefixer->prefixPath($path);
+
+    $objectList = $this->getContainer()->listObjects([
+      'prefix' => $location,
+    ]);
+
+    foreach ($objectList as $object) {
+      yield $this->normalizeObject($object);
+    }
+  }
+
+  private function normalizeObject(StorageObject $object): FileAttributes|DirectoryAttributes
+  {
+    $path = $this->prefixer->stripPrefix($object->name);
+
+    if ($object->contentType === 'application/directory') {
+      return new DirectoryAttributes(trim($path, '/'));
     }
 
-    return true;
+    $mimetype = $object->contentType ?: Mime::getMime($path);
+    $timestamp = $object->lastModified ? $object->lastModified->getTimestamp() : null;
+
+    return new FileAttributes(
+      trim($path, '/'),
+      $object->contentLength ?? null,
+      null, // visibility
+      $timestamp,
+      $mimetype
+    );
   }
 
-  /**
-  * @inheritdoc
-  */
-  public function rename($path, $newpath)
+  private function fileAttributes(string $path): FileAttributes
   {
-    return false;
+    try {
+      $location = $this->prefixer->prefixPath($path);
+      $object = $this->getContainer()->getObject($location);
+      return $this->normalizeObject($object);
+    } catch (\Exception $e) {
+      throw UnableToRetrieveMetadata::create($path, 'metadata', $e->getMessage(), $e);
+    }
   }
 
-  /**
-  * @inheritdoc
-  */
-  public function write($path, $contents, Config $config)
+  private function mergeConfig(string $method = 'postObject', Config $config = null, array $obj = []): array
   {
-    $obj = array_merge($this->mergeConfig('putObject', $config ),[
-      'name' => $this->applyPathPrefix($path),
-      'content' => $contents
-    ]);
+    if (!$config) {
+      return [];
+    }
 
-    return $this->getContainer()->createObject($obj);
-  }
-
-  /**
-  * Write a new file using a stream.
-  *
-  * @param string   $path
-  * @param resource $resource
-  * @param Config   $config Config object
-  *
-  * @return array|false false on failure file meta data on success
-  */
-  public function writeStream($path, $resource, Config $config)
-  {
-    $obj = [
-      'name' => $this->applyPathPrefix($path),
-      //new Stream($resource)
-    ];
-    $obj = array_merge($this->mergeConfig('putObject', $config ),[
-      'name' => $this->applyPathPrefix($path),
-      'stream' => new Stream($resource)
-    ]);
-
-    return $this->getContainer()->createObject($obj);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function update($path, $contents, Config $config)
-  {
-    $this->delete($path);
-    return $this->write($path, $contents, $config);
-  }
-
-  public function updateStream($path, $resource, Config $config)
-  {
-    $this->delete($path);
-    return $this->writeStream($path, $resource, $config);
-  }
-
-
-  /**
-  * @inheritdoc
-  */
-  public function createDir($dirname, Config $config)
-  {
-    $obj = array_merge($this->mergeConfig('postObject', $config ),[
-      'name' => $this->applyPathPrefix($dirname),
-      'contentType' => 'application/directory'
-    ]);
-
-    return $this->getContainer()->createObject($obj);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function deleteDir($dirname)
-  {
-    return $this->delete($dirname );
-  }
-
-  protected function mergeConfig(string $method = 'postObject', Config $config = null, array $obj = null)
-  {
-    if(!$config) return [];
-    if(!$obj) $obj = [];
-    foreach($this->getOptionsFor($method) as $opt) if($config->get('$opt', false)) $obj[$opt] = $config->get($opt);
+    foreach ($this->getOptionsFor($method) as $opt) {
+      if ($config->get($opt, false)) {
+        $obj[$opt] = $config->get($opt);
+      }
+    }
 
     return $obj;
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function read($path)
-  {
-    $objArray = $this->readStream($path);
-    if(!$objArray) return false;
-
-    return [
-      'contents' => $objArray['stream']->getContents()
-    ];
-  }
-
-  public function readStream($path)
-  {
-    if(!$this->has($path)) return false;
-
-    $location = $this->applyPathPrefix($path);
-    $obj = $this->getContainer()->getObject($location);
-    return array_merge((array) $obj, [
-      'stream' => $obj->download()
-    ]);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function listContents($directory = '', $recursive = false)
-  {
-    $response = [];
-    $marker = null;
-    $location = $this->applyPathPrefix($directory);
-
-    while(true)
-    {
-      $objectList = $this->getContainer()->listObjects([
-        'prefix' => $location,
-        'marker' => $marker,
-        //'limit' => 100
-      ]);
-      $response = array_merge($response, iterator_to_array($objectList));
-
-      /* No time to check how to get all record with marker implementation
-      if (count($response) === 0) break;
-      $marker = end($response)->name;
-      */
-
-      break;
-    }
-
-    return Util::emulateDirectories(array_map([$this, 'normalizeObject'], $response));
-  }
-
-  /**
-   * Normalise a WebDAV repsonse object.
-   *
-   * @param StorageObject  $object
-   * @param string $path
-   *
-   * @return array
-   */
-  protected function normalizeObject(StorageObject $object, $path = null)
-  {
-    //debug($object);
-      if(!$path) $path = $object->name;
-
-      $path = ltrim($path, $this->getPathPrefix());
-
-      if ($object->contentType == 'application/directory') {
-        return ['type' => 'dir', 'path' => trim($path, '/')];
-      }
-
-      $result = Util::map((array) $object, static::$resultMap);
-
-      // fix MIME
-      if(empty($result['mimetype'])) $result['mimetype'] = Mime::getMime($path);
-
-      if ($object->lastModified)  $result['timestamp'] = $object->lastModified->getTimestamp();
-
-      $result['type'] = 'file';
-      $result['path'] = trim($path, '/');
-      return $result;
-  }
-
-  public function getObjectArray($path)
-  {
-    $location = $this->applyPathPrefix($path);
-    $obj = $this->getContainer()->getObject($location);
-    return $this->normalizeObject($obj);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function getMetadata($path)
-  {
-    return $this->getObjectArray($path);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function getSize($path)
-  {
-    return $this->getMetadata($path);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function getMimetype($path)
-  {
-    return $this->getMetadata($path);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function getTimestamp($path)
-  {
-    return $this->getMetadata($path);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function getVisibility($path)
-  {
-    return $this->getMetadata($path);
-  }
-
-  /**
-  * @inheritdoc
-  */
-  public function setVisibility($path, $visibility)
-  {
-    return false;
   }
 }

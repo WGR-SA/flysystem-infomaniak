@@ -1,39 +1,61 @@
 <?php
+
 namespace Wgr\Flysystem\Infomaniak\Adapter;
 
 use League\Flysystem\Config;
-use League\Flysystem\Util;
+use League\Flysystem\UnableToWriteFile;
 use League\Flysystem\WebDAV\WebDAVAdapter;
+use League\Flysystem\PathPrefixer;
 
 class WebDAV extends WebDAVAdapter
 {
-  /**
-   * {@inheritdoc}
-   */
-  public function writeStream($path, $resource, Config $config)
-  {
-      $contents = stream_get_contents($resource);
-      return $this->write($path, $contents, $config);
-  }
+    /**
+     * Write using a stream.
+     *
+     * @throws UnableToWriteFile
+     */
+    public function writeStream(string $path, $contents, Config $config): void
+    {
+        try {
+            $contents = stream_get_contents($contents);
+            $this->write($path, $contents, $config);
+        } catch (\Exception $e) {
+            throw UnableToWriteFile::atLocation($path, $e->getMessage(), $e);
+        }
+    }
 
-  /**
-   * {@inheritdoc}
-   */
-  public function write($path, $contents, Config $config)
-  {
-      if (!$this->createDir(Util::dirname($path), $config)) {
-          return false;
-      }
+    /**
+     * Write a file.
+     *
+     * @throws UnableToWriteFile
+     */
+    public function write(string $path, string $contents, Config $config): void
+    {
+        $location = $this->prefixer->prefixPath($this->encodePath($path));
 
-      $location = $this->applyPathPrefix($this->encodePath($path));
-      $response = $this->client->request('PUT', $location, $contents);
+        try {
+            // Ensure parent directory exists
+            $dirname = dirname($path);
+            if ($dirname !== '' && $dirname !== '.') {
+                $this->createDirectory($dirname, $config);
+            }
 
-      if ($response['statusCode'] >= 400) {
-          return false;
-      }
+            $response = $this->client->request('PUT', $location, $contents);
 
-      $result = compact('path', 'contents');
+            if ($response['statusCode'] >= 400) {
+                throw new \RuntimeException('Unable to write file: ' . $response['statusCode']);
+            }
+        } catch (\Exception $e) {
+            throw UnableToWriteFile::atLocation($path, $e->getMessage(), $e);
+        }
+    }
 
-      return $result;
-  }
+    /**
+     * Encode the path.
+     */
+    private function encodePath(string $path): string
+    {
+        $path = rawurlencode($path);
+        return str_replace('%2F', '/', $path);
+    }
 }
