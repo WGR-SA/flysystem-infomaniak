@@ -14,6 +14,8 @@ use League\Flysystem\UnableToReadFile;
 use League\Flysystem\UnableToRetrieveMetadata;
 use League\Flysystem\UnableToSetVisibility;
 use League\Flysystem\UnableToWriteFile;
+use League\Flysystem\UnableToCopyFile;
+use League\Flysystem\UnableToMoveFile;
 use GuzzleHttp\Psr7\Stream;
 use OpenStack\OpenStack as Client;
 use OpenStack\ObjectStore\v1\Models\StorageObject;
@@ -68,6 +70,22 @@ class OpenStack implements FilesystemAdapter
 
     try {
       return $this->getContainer()->objectExists($location);
+    } catch (\Exception $e) {
+      throw UnableToCheckExistence::forLocation($path, $e);
+    }
+  }
+
+  public function directoryExists(string $path): bool
+  {
+    $location = $this->prefixer->prefixPath($path);
+
+    try {
+      $objects = $this->getContainer()->listObjects([
+        'prefix' => $location,
+        'limit' => 1,
+      ]);
+
+      return iterator_count($objects) > 0;
     } catch (\Exception $e) {
       throw UnableToCheckExistence::forLocation($path, $e);
     }
@@ -138,7 +156,19 @@ class OpenStack implements FilesystemAdapter
 
   public function deleteDirectory(string $path): void
   {
-    $this->delete($path);
+    $location = $this->prefixer->prefixPath($path);
+
+    try {
+      $objects = $this->getContainer()->listObjects([
+        'prefix' => $location
+      ]);
+
+      foreach ($objects as $object) {
+        $this->getContainer()->getObject($object->name)->delete();
+      }
+    } catch (\Exception $e) {
+      throw UnableToDeleteFile::atLocation($path, $e->getMessage(), $e);
+    }
   }
 
   public function createDirectory(string $path, Config $config): void
@@ -184,12 +214,50 @@ class OpenStack implements FilesystemAdapter
   {
     $location = $this->prefixer->prefixPath($path);
 
-    $objectList = $this->getContainer()->listObjects([
-      'prefix' => $location,
-    ]);
+    try {
+      $objectList = $this->getContainer()->listObjects([
+        'prefix' => $location,
+      ]);
 
-    foreach ($objectList as $object) {
-      yield $this->normalizeObject($object);
+      foreach ($objectList as $object) {
+        yield $this->normalizeObject($object);
+      }
+    } catch (\Exception $e) {
+      // Handle the exception or let it propagate
+      throw new \RuntimeException("Unable to list contents at {$path}", 0, $e);
+    }
+  }
+
+  public function move(string $source, string $destination, Config $config): void
+  {
+    try {
+      // OpenStack doesn't have a native move operation
+      // So we'll implement it as copy + delete
+      $this->copy($source, $destination, $config);
+      $this->delete($source);
+    } catch (\Exception $e) {
+      throw UnableToMoveFile::fromLocationTo($source, $destination, $e);
+    }
+  }
+
+  public function copy(string $source, string $destination, Config $config): void
+  {
+    $sourceLocation = $this->prefixer->prefixPath($source);
+    $destinationLocation = $this->prefixer->prefixPath($destination);
+
+    try {
+      // Read the source file
+      $sourceObject = $this->getContainer()->getObject($sourceLocation);
+
+      // Create new object with the same content
+      $obj = array_merge($this->mergeConfig('putObject', $config), [
+        'name' => $destinationLocation,
+        'content' => $sourceObject->download()->getContents()
+      ]);
+
+      $this->getContainer()->createObject($obj);
+    } catch (\Exception $e) {
+      throw UnableToCopyFile::fromLocationTo($source, $destination, $e);
     }
   }
 
